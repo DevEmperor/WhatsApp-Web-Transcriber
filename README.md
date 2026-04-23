@@ -1,18 +1,15 @@
 # 💬 WhatsApp Web Voice Transcriber
 
-![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
-![JavaScript](https://img.shields.io/badge/Code-JavaScript-yellow.svg)
-![Tampermonkey](https://img.shields.io/badge/Extension-Tampermonkey-black.svg)
+![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg) ![JavaScript](https://img.shields.io/badge/Code-JavaScript-yellow.svg) ![Tampermonkey](https://img.shields.io/badge/Extension-Tampermonkey-black.svg)
 
-A lightweight, robust Tampermonkey Userscript that allows you to transcribe WhatsApp Web voice messages into text with a single click. Powered by the blazing-fast Groq API (Whisper-large-v3).
+**A lightweight, robust Tampermonkey Userscript that allows you to transcribe WhatsApp Web voice messages into text with a single click. Powered by the blazing-fast Groq API (Whisper-large-v3).**
 
 ## 📸 Screenshots
 
-![Screenshot 1: The Transcribe Button](link-zum-bild-1.png)
-*The custom button integrates seamlessly into the WhatsApp Web UI.*
-
-![Screenshot 2: The Result](link-zum-bild-2.png)
-*Transcriptions appear directly below the voice message, complete with a convenient copy button.*
+| The Transcribe Button | The Result |
+| :---: | :---: |
+| <img src="https://github.com/DevEmperor/WhatsApp-Web-Transcriber/blob/160622cbd920e3a18354f081f39ebec5f1a14175/img/img_1.png?raw=true" width="100%"> | <img src="https://github.com/DevEmperor/WhatsApp-Web-Transcriber/blob/160622cbd920e3a18354f081f39ebec5f1a14175/img/img_2.png?raw=true" width="100%"> |
+| *The custom button integrates seamlessly into the WhatsApp Web UI.* | *Transcriptions appear directly below the voice message, complete with a convenient copy button.* |
 
 ## ✨ Features
 
