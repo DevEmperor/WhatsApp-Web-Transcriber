@@ -11,8 +11,8 @@
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @connect      api.groq.com
-// @updateURL    https://raw.githubusercontent.com/YOUR_GITHUB_NAME/YOUR_REPO_NAME/main/wa-transcriber.user.js
-// @downloadURL  https://raw.githubusercontent.com/YOUR_GITHUB_NAME/YOUR_REPO_NAME/main/wa-transcriber.user.js
+// @updateURL    https://raw.githubusercontent.com/DevEmperor/WhatsApp-Web-Transcriber/main/WhatsApp-Web-Transcriber.user.js
+// @downloadURL  https://raw.githubusercontent.com/DevEmperor/WhatsApp-Web-Transcriber/main/WhatsApp-Web-Transcriber.user.js
 // ==/UserScript==
 
 (function() {
