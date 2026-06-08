@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         WhatsApp Web Transcriber
 // @namespace    http://tampermonkey.net/
-// @version      1.5
-// @description  Transcribes WhatsApp voice messages with one click (Updated DOM selectors)
+// @version      1.6
+// @description  Transcribes WhatsApp voice messages with one click (Fixed Emoji Rendering)
 // @author       DevEmperor
 // @match        https://web.whatsapp.com/*
 // @grant        GM_xmlhttpRequest
@@ -51,7 +51,6 @@
         const promptText = "Enter a 2-letter language code (e.g., 'en' for English, 'de' for German, 'es' for Spanish).\n\nLeave the field completely blank to use Auto-Detect:";
         const newLang = prompt(promptText, targetLanguage);
 
-        // If user clicks "Cancel", newLang is null. If they click "OK", it's a string.
         if (newLang !== null) {
             targetLanguage = newLang.trim().toLowerCase();
             GM_setValue(LANGUAGE_NAME, targetLanguage);
@@ -100,7 +99,6 @@
     function setBtnState(btn, state, isOut) {
         btn.dataset.state = state;
 
-        // Colors: Green for sent, dark grey for received
         const defaultColor = isOut ? '#144d37' : '#242626';
 
         if (state === 'idle') {
@@ -128,18 +126,27 @@
         const voiceMessageLabels = document.querySelectorAll('span[aria-label="Voice message"]');
         voiceMessageLabels.forEach(label => {
 
-            // --- UPDATED: Finding the message container using role="row" ---
             const messageContainer = label.closest('[role="row"]');
             if (!messageContainer) return;
 
-            // --- UPDATED: Heuristic to detect outgoing messages (status icons only exist on outgoing) ---
-            const isOut = !!messageContainer.querySelector('[data-icon="msg-dblcheck"], [data-icon="msg-check"], [data-icon="msg-time"]');
-
-            // --- UPDATED: Locate the main colored bubble robustly ---
             const coloredBubble = label.closest('._ak4a, ._ak49') || label.closest('[data-testid="msg-container"] > div > div');
             if (!coloredBubble || coloredBubble.querySelector('.wa-transcribe-wrapper')) return;
 
-            // --- EXACT TIMESTAMP ANCHORING ---
+            let isOut = false;
+
+            if (coloredBubble.classList.contains('_ak4a') || messageContainer.classList.contains('message-out')) {
+                isOut = true;
+            } else if (messageContainer.querySelector('[data-testid*="msg-dblcheck"], [data-testid*="msg-check"], [data-testid*="msg-time"], [data-icon*="msg-dblcheck"], [data-icon*="msg-check"], [data-icon*="msg-time"]')) {
+                isOut = true;
+            } else {
+                const rowRect = messageContainer.getBoundingClientRect();
+                const bubbleRect = coloredBubble.getBoundingClientRect();
+                if (rowRect.width > 0 && bubbleRect.width > 0) {
+                    const isRightAligned = (bubbleRect.left + bubbleRect.width / 2) > (rowRect.left + rowRect.width / 2);
+                    isOut = document.dir === 'rtl' ? !isRightAligned : isRightAligned;
+                }
+            }
+
             const timeStampContainer = coloredBubble.querySelector('._ak4s');
             if (timeStampContainer && !timeStampContainer.dataset.anchored) {
                 if (window.getComputedStyle(coloredBubble).position === 'static') {
@@ -161,7 +168,6 @@
                 timeStampContainer.dataset.anchored = "true";
             }
 
-            // --- TRANSCRIBER WRAPPER ---
             const btnWrapper = document.createElement('div');
             btnWrapper.className = 'wa-transcribe-wrapper';
             Object.assign(btnWrapper.style, {
@@ -174,7 +180,6 @@
                 clear: 'both'
             });
 
-            // Flex container for the buttons
             const buttonGroup = document.createElement('div');
             Object.assign(buttonGroup.style, {
                 display: 'flex',
@@ -182,7 +187,6 @@
                 width: '100%'
             });
 
-            // --- COPY BUTTON ---
             const copyBtn = document.createElement('button');
             copyBtn.className = 'wa-copy-btn';
             copyBtn.innerHTML = '📋 Copy';
@@ -201,7 +205,6 @@
                 transition: 'background-color 0.2s'
             });
 
-            // --- MAIN BUTTON ---
             const btn = document.createElement('button');
             btn.className = 'wa-transcribe-btn';
             Object.assign(btn.style, {
@@ -227,7 +230,6 @@
                     setBtnState(btn, 'idle', isOut);
                     copyBtn.style.display = 'none';
                 } else if (btn.dataset.state === 'idle') {
-                    // Check for API key before starting download/API call
                     const currentKey = checkAndGetApiKey();
                     if (currentKey && currentKey.trim() !== '') {
                         startDownloadTrick(messageContainer, coloredBubble, btnWrapper, btn, isOut);
@@ -264,7 +266,6 @@
         let attempts = 0;
         const findMenuInterval = setInterval(() => {
             attempts++;
-            // --- UPDATED: Added fallback for German WhatsApp UI ("Herunterladen") ---
             const downloadBtn = document.querySelector('[aria-label="Download"], [aria-label="Herunterladen"]');
 
             if (downloadBtn) {
@@ -295,7 +296,8 @@
         let textDiv = btnWrapper.querySelector('.wa-transcript-text');
 
         if (!textDiv) {
-            textDiv = createTextContainer("...", isOut);
+            textDiv = createTextContainer(isOut);
+            updateTextContent(textDiv, "...", false);
             btnWrapper.insertBefore(textDiv, btnWrapper.firstChild);
         }
 
@@ -303,7 +305,6 @@
         formData.append('file', blob, 'voice_message.ogg');
         formData.append('model', 'whisper-large-v3');
 
-        // Inject Language if specified
         if (targetLanguage && targetLanguage !== '') {
             formData.append('language', targetLanguage);
         }
@@ -316,7 +317,7 @@
             onload: function(res) {
                 if (res.status === 200) {
                     const resultText = JSON.parse(res.responseText).text;
-                    textDiv.innerText = "🤖 " + resultText;
+                    updateTextContent(textDiv, resultText, false);
                     setBtnState(btn, 'close', isOut);
 
                     const copyBtn = btnWrapper.querySelector('.wa-copy-btn');
@@ -343,13 +344,30 @@
         });
     }
 
+    // --- NEW: Helper Function for safe and robust formatting ---
+    function updateTextContent(container, text, isError) {
+        container.innerHTML = ''; // Clear previous content
+
+        const iconSpan = document.createElement('span');
+        iconSpan.innerText = isError ? '🤖 ❌ ' : '🤖 ';
+        iconSpan.style.fontStyle = 'normal'; // Fix for Emoji Rendering!
+        iconSpan.style.marginRight = '4px';
+
+        const textSpan = document.createElement('span');
+        textSpan.innerText = text;
+        textSpan.style.fontStyle = 'italic'; // Text remains italic
+
+        container.appendChild(iconSpan);
+        container.appendChild(textSpan);
+    }
+
     function showError(btn, btnWrapper, msg, isOut) {
         setBtnState(btn, 'error', isOut);
         let textDiv = btnWrapper.querySelector('.wa-transcript-text');
-        if (textDiv) textDiv.innerText = "🤖 ❌ " + msg;
+        if (textDiv) updateTextContent(textDiv, msg, true);
     }
 
-    function createTextContainer(text, isOut) {
+    function createTextContainer(isOut) {
         const div = document.createElement('div');
         div.className = 'wa-transcript-text';
 
@@ -360,7 +378,6 @@
             marginBottom: '8px',
             backgroundColor: bgColor,
             borderRadius: '8px',
-            fontStyle: 'italic',
             fontSize: '14px',
             lineHeight: '1.4',
             color: 'var(--primary-text)',
@@ -368,11 +385,10 @@
             width: '100%',
             boxSizing: 'border-box'
         });
-        div.innerText = text;
+        // fontStyle: 'italic' was removed here and moved to updateTextContent
         return div;
     }
 
-    // --- Performance Update: Throttling instead of Debouncing ---
     let isThrottled = false;
     const observer = new MutationObserver(() => {
         if (!isThrottled) {
@@ -384,13 +400,9 @@
         }
     });
 
-    // --- Start Call ---
     setTimeout(() => {
         console.log("🚀 Voice Transcriber started.");
-
-        // Initial API key check when the script loads for the first time
         setTimeout(checkAndGetApiKey, 1000);
-
         findAndInjectButtons();
         observer.observe(document.body, { childList: true, subtree: true });
     }, 1500);
