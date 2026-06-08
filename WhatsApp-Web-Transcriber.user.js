@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         WhatsApp Web Transcriber
 // @namespace    http://tampermonkey.net/
-// @version      1.4
-// @description  Transcribes WhatsApp voice messages with one click
+// @version      1.5
+// @description  Transcribes WhatsApp voice messages with one click (Updated DOM selectors)
 // @author       DevEmperor
 // @match        https://web.whatsapp.com/*
 // @grant        GM_xmlhttpRequest
@@ -127,13 +127,16 @@
     function findAndInjectButtons() {
         const voiceMessageLabels = document.querySelectorAll('span[aria-label="Voice message"]');
         voiceMessageLabels.forEach(label => {
-            const messageContainer = label.closest('.message-in, .message-out');
+
+            // --- UPDATED: Finding the message container using role="row" ---
+            const messageContainer = label.closest('[role="row"]');
             if (!messageContainer) return;
 
-            const isOut = messageContainer.classList.contains('message-out');
+            // --- UPDATED: Heuristic to detect outgoing messages (status icons only exist on outgoing) ---
+            const isOut = !!messageContainer.querySelector('[data-icon="msg-dblcheck"], [data-icon="msg-check"], [data-icon="msg-time"]');
 
-            // Locate the main colored bubble
-            const coloredBubble = messageContainer.querySelector('._ak4a, ._ak49') || messageContainer.querySelector('[data-id] > div > div > div');
+            // --- UPDATED: Locate the main colored bubble robustly ---
+            const coloredBubble = label.closest('._ak4a, ._ak49') || label.closest('[data-testid="msg-container"] > div > div');
             if (!coloredBubble || coloredBubble.querySelector('.wa-transcribe-wrapper')) return;
 
             // --- EXACT TIMESTAMP ANCHORING ---
@@ -261,7 +264,8 @@
         let attempts = 0;
         const findMenuInterval = setInterval(() => {
             attempts++;
-            const downloadBtn = document.querySelector('[aria-label="Download"][role="menuitem"]');
+            // --- UPDATED: Added fallback for German WhatsApp UI ("Herunterladen") ---
+            const downloadBtn = document.querySelector('[aria-label="Download"], [aria-label="Herunterladen"]');
 
             if (downloadBtn) {
                 clearInterval(findMenuInterval);
@@ -299,7 +303,7 @@
         formData.append('file', blob, 'voice_message.ogg');
         formData.append('model', 'whisper-large-v3');
 
-        // --- NEW: Inject Language if specified ---
+        // Inject Language if specified
         if (targetLanguage && targetLanguage !== '') {
             formData.append('language', targetLanguage);
         }
