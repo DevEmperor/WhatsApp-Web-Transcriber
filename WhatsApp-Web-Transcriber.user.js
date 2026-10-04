@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         WhatsApp Web Transcriber
 // @namespace    http://tampermonkey.net/
-// @version      1.6
-// @description  Transcribes WhatsApp voice messages with one click (Fixed Emoji Rendering)
+// @version      1.7
+// @description  Transcribes WhatsApp voice messages with one click (Layout fix for the 2026 WhatsApp Web redesign)
 // @author       DevEmperor
 // @match        https://web.whatsapp.com/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_addStyle
 // @grant        unsafeWindow
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -29,7 +30,8 @@
         if (!apiKey || apiKey.trim() === '') {
             apiKey = prompt("🤖 WhatsApp Voice Transcriber\n\nPlease enter your Groq API Key (gsk_...):\n(You can get one for free at console.groq.com/keys)");
             if (apiKey && apiKey.trim() !== '') {
-                GM_setValue(API_KEY_NAME, apiKey.trim());
+                apiKey = apiKey.trim();
+                GM_setValue(API_KEY_NAME, apiKey);
                 alert("✅ API Key saved successfully!");
             }
         }
@@ -65,194 +67,242 @@
 
     // --- 1. CSP BYPASS VIA UNSAFEWINDOW ---
     const originalClick = unsafeWindow.HTMLAnchorElement.prototype.click;
-    unsafeWindow.HTMLAnchorElement.prototype.click = function() {
+    function trappedClick() {
         if (unsafeWindow.__transcriberTrapArmed === true && this.download) {
             unsafeWindow.__transcriberTrapArmed = false;
             document.dispatchEvent(new CustomEvent('AudioCaught', { detail: this.href }));
             return;
         }
         return originalClick.apply(this, arguments);
+    }
+    // If Firefox runs the script in an Xray sandbox, the page may only call functions exported to it
+    let clickHook = trappedClick;
+    if (typeof exportFunction === 'function') {
+        try { clickHook = exportFunction(trappedClick, unsafeWindow); } catch (err) { /* already in page context */ }
+    }
+    unsafeWindow.HTMLAnchorElement.prototype.click = clickHook;
+
+    // --- 2. STYLES ---
+    GM_addStyle(`
+        .wa-tr-wrap {
+            contain: inline-size; /* long transcripts must not stretch the bubble */
+            margin: 2px 6px 0;
+            padding: 8px 0 6px;
+            border-top: 1px solid var(--wa-tr-line);
+        }
+        .wa-tr-dark {
+            --wa-tr-line: rgba(255, 255, 255, 0.15);
+            --wa-tr-box: rgba(0, 0, 0, 0.15);
+            --wa-tr-fg: #e9edef;
+            --wa-tr-soft: #404a4e;
+            --wa-tr-hover: rgba(255, 255, 255, 0.06);
+        }
+        .wa-tr-light {
+            --wa-tr-line: rgba(0, 0, 0, 0.1);
+            --wa-tr-box: rgba(0, 0, 0, 0.05);
+            --wa-tr-fg: #111b21;
+            --wa-tr-soft: rgba(0, 0, 0, 0.08);
+            --wa-tr-hover: rgba(0, 0, 0, 0.04);
+        }
+        .wa-tr-text {
+            box-sizing: border-box;
+            max-height: 350px;
+            overflow-y: auto;
+            margin: 0 0 8px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            background: var(--wa-tr-box);
+            color: var(--wa-tr-fg);
+            font-size: 14px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            user-select: text;
+        }
+        .wa-tr-icon { font-style: normal; margin-right: 4px; } /* Emojis must not be italic */
+        .wa-tr-body { font-style: italic; }
+        .wa-tr-buttons { display: flex; gap: 8px; }
+        .wa-tr-btn {
+            flex: 2;
+            min-width: 0;
+            margin: 0;
+            padding: 8px 12px;
+            border: none;
+            border-radius: 8px;
+            background: transparent;
+            color: var(--wa-tr-fg);
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: bold;
+            line-height: 1.2;
+            text-align: center;
+            cursor: pointer;
+            transition: background-color 0.2s, filter 0.2s;
+        }
+        .wa-tr-btn[hidden] { display: none; }
+        .wa-tr-btn[data-state="idle"]:hover { background: var(--wa-tr-hover); }
+        .wa-tr-btn[data-state="menu"], .wa-tr-btn[data-state="download"], .wa-tr-btn[data-state="upload"] {
+            background: #8696a0; color: white; cursor: progress;
+        }
+        .wa-tr-btn[data-state="close"], .wa-tr-btn[data-state="error"] { background: #d14553; color: white; }
+        .wa-tr-copy { flex: 1; background: var(--wa-tr-soft); }
+        .wa-tr-copy[data-copied] { background: #00a884; color: white; }
+        .wa-tr-copy:hover, .wa-tr-btn[data-state="close"]:hover, .wa-tr-btn[data-state="error"]:hover { filter: brightness(1.12); }
+    `);
+
+    // --- 3. TAMPERMONKEY LOGIC ---
+    const VOICE_SELECTOR = 'span[aria-label="Voice message"], span[aria-label="Sprachnachricht"]';
+    const DOWNLOAD_SELECTOR = '[aria-label="Download"], [aria-label="Herunterladen"]';
+
+    const BUTTON_LABELS = {
+        idle: '📄 Transcribe',
+        menu: '🔍 Finding menu...',
+        download: '⏳ Extracting...',
+        upload: '🚀 Transcribing...',
+        close: '✖ Close',
+        error: '🔄 Try again'
     };
 
-    // --- 2. TAMPERMONKEY LOGIC ---
+    // WhatsApp unmounts rows that scroll out of view, so finished transcripts are kept per message id
+    const transcripts = new Map();
     let currentSession = null;
 
     document.addEventListener('AudioCaught', async (e) => {
         if (!currentSession) return;
         const blobUrl = e.detail;
-        const { btnWrapper, btn, isOut } = currentSession;
+        const ui = currentSession;
         currentSession = null;
 
-        setBtnState(btn, 'upload', isOut);
+        setBtnState(ui.btn, 'upload');
 
         try {
             const response = await fetch(blobUrl);
             const blob = await response.blob();
-            sendToAPI(blob, btnWrapper, btn, isOut);
+            sendToAPI(blob, ui);
         } catch (err) {
             console.error("Fetch error:", err);
-            showError(btn, btnWrapper, "File error", isOut);
+            showError(ui, "File error");
         }
     });
 
-    // Manages dynamic button states and colors
-    function setBtnState(btn, state, isOut) {
+    function setBtnState(btn, state) {
         btn.dataset.state = state;
+        btn.textContent = BUTTON_LABELS[state];
+    }
 
-        const defaultColor = isOut ? '#144d37' : '#242626';
+    function isTransparent(color) {
+        return color === 'transparent' || /,\s*0\)$/.test(color);
+    }
 
-        if (state === 'idle') {
-            btn.innerHTML = '📄 Transcribe';
-            btn.style.backgroundColor = defaultColor;
-        } else if (state === 'menu') {
-            btn.innerHTML = '🔍 Finding menu...';
-            btn.style.backgroundColor = '#8696a0';
-        } else if (state === 'download') {
-            btn.innerHTML = '⏳ Extracting...';
-            btn.style.backgroundColor = '#8696a0';
-        } else if (state === 'upload') {
-            btn.innerHTML = '🚀 Transcribing...';
-            btn.style.backgroundColor = '#8696a0';
-        } else if (state === 'close') {
-            btn.innerHTML = '✖ Close';
-            btn.style.backgroundColor = '#d14553'; // Red
-        } else if (state === 'error') {
-            btn.innerHTML = '🔄 Try again';
-            btn.style.backgroundColor = '#d14553'; // Red
+    function isDark(color) {
+        const [r, g, b] = (color.match(/\d+(\.\d+)?/g) || [0, 0, 0]).map(Number);
+        return 0.299 * r + 0.587 * g + 0.114 * b < 128;
+    }
+
+    // The bubble is the element that paints the green/grey background
+    function findBubble(label, row) {
+        const msgContainer = label.closest('[data-testid="msg-container"]');
+        if (msgContainer) {
+            return [...msgContainer.children].find(child => child.contains(label)) || null;
         }
+        for (let el = label.parentElement; el && el !== row; el = el.parentElement) {
+            if (!isTransparent(getComputedStyle(el).backgroundColor)) return el;
+        }
+        return null;
     }
 
     function findAndInjectButtons() {
-        const voiceMessageLabels = document.querySelectorAll('span[aria-label="Voice message"]');
-        voiceMessageLabels.forEach(label => {
+        document.querySelectorAll(VOICE_SELECTOR).forEach(label => {
+            const row = label.closest('[role="row"]');
+            if (!row || row.querySelector('.wa-tr-wrap')) return;
 
-            const messageContainer = label.closest('[role="row"]');
-            if (!messageContainer) return;
+            const bubble = findBubble(label, row);
+            if (!bubble) return;
+            const content = [...bubble.children].find(child => child.contains(label));
+            if (!content) return;
 
-            const coloredBubble = label.closest('._ak4a, ._ak49') || label.closest('[data-testid="msg-container"] > div > div');
-            if (!coloredBubble || coloredBubble.querySelector('.wa-transcribe-wrapper')) return;
-
-            let isOut = false;
-
-            if (coloredBubble.classList.contains('_ak4a') || messageContainer.classList.contains('message-out')) {
-                isOut = true;
-            } else if (messageContainer.querySelector('[data-testid*="msg-dblcheck"], [data-testid*="msg-check"], [data-testid*="msg-time"], [data-icon*="msg-dblcheck"], [data-icon*="msg-check"], [data-icon*="msg-time"]')) {
-                isOut = true;
-            } else {
-                const rowRect = messageContainer.getBoundingClientRect();
-                const bubbleRect = coloredBubble.getBoundingClientRect();
-                if (rowRect.width > 0 && bubbleRect.width > 0) {
-                    const isRightAligned = (bubbleRect.left + bubbleRect.width / 2) > (rowRect.left + rowRect.width / 2);
-                    isOut = document.dir === 'rtl' ? !isRightAligned : isRightAligned;
-                }
+            // WhatsApp pins the timestamp to the bottom of the bubble. Turning the original content into
+            // its containing block keeps it next to the waveform instead of sliding under our buttons.
+            if (getComputedStyle(content).position === 'static') {
+                content.style.position = 'relative';
             }
 
-            const timeStampContainer = coloredBubble.querySelector('._ak4s');
-            if (timeStampContainer && !timeStampContainer.dataset.anchored) {
-                if (window.getComputedStyle(coloredBubble).position === 'static') {
-                    coloredBubble.style.position = 'relative';
-                }
-
-                const tsRect = timeStampContainer.getBoundingClientRect();
-                const bubbleRect = coloredBubble.getBoundingClientRect();
-
-                const topOffset = tsRect.top - bubbleRect.top;
-                const rightOffset = bubbleRect.right - tsRect.right;
-
-                timeStampContainer.style.position = 'absolute';
-                timeStampContainer.style.top = topOffset + 'px';
-                timeStampContainer.style.right = rightOffset + 'px';
-                timeStampContainer.style.bottom = 'auto';
-                timeStampContainer.style.left = 'auto';
-                timeStampContainer.style.margin = '0';
-                timeStampContainer.dataset.anchored = "true";
-            }
-
-            const btnWrapper = document.createElement('div');
-            btnWrapper.className = 'wa-transcribe-wrapper';
-            Object.assign(btnWrapper.style, {
-                display: 'block',
-                width: '100%',
-                boxSizing: 'border-box',
-                marginTop: '26px',
-                paddingTop: '8px',
-                borderTop: isOut ? '1px solid rgba(255, 255, 255, 0.15)' : '1px solid rgba(255, 255, 255, 0.05)',
-                clear: 'both'
-            });
-
-            const buttonGroup = document.createElement('div');
-            Object.assign(buttonGroup.style, {
-                display: 'flex',
-                gap: '8px',
-                width: '100%'
-            });
-
-            const copyBtn = document.createElement('button');
-            copyBtn.className = 'wa-copy-btn';
-            copyBtn.innerHTML = '📋 Copy';
-            Object.assign(copyBtn.style, {
-                padding: '6px 12px',
-                color: 'white',
-                backgroundColor: '#404a4e',
-                border: 'none',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontSize: '13px',
-                fontWeight: 'bold',
-                flex: '1',
-                display: 'none',
-                textAlign: 'center',
-                transition: 'background-color 0.2s'
-            });
-
-            const btn = document.createElement('button');
-            btn.className = 'wa-transcribe-btn';
-            Object.assign(btn.style, {
-                padding: '6px 12px',
-                color: 'white',
-                border: 'none',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontSize: '13px',
-                fontWeight: 'bold',
-                flex: '2',
-                boxSizing: 'border-box',
-                textAlign: 'center',
-                transition: 'background-color 0.2s'
-            });
-
-            setBtnState(btn, 'idle', isOut);
-
-            btn.onclick = () => {
-                if (btn.dataset.state === 'close' || btn.dataset.state === 'error') {
-                    const textDiv = btnWrapper.querySelector('.wa-transcript-text');
-                    if (textDiv) textDiv.remove();
-                    setBtnState(btn, 'idle', isOut);
-                    copyBtn.style.display = 'none';
-                } else if (btn.dataset.state === 'idle') {
-                    const currentKey = checkAndGetApiKey();
-                    if (currentKey && currentKey.trim() !== '') {
-                        startDownloadTrick(messageContainer, coloredBubble, btnWrapper, btn, isOut);
-                    } else {
-                        showError(btn, btnWrapper, "Missing API Key", isOut);
-                    }
-                }
-            };
-
-            buttonGroup.appendChild(copyBtn);
-            buttonGroup.appendChild(btn);
-            btnWrapper.appendChild(buttonGroup);
-            coloredBubble.appendChild(btnWrapper);
+            const idHolder = row.querySelector('[data-id]') || row.closest('[data-id]');
+            const ui = createUI(bubble, idHolder ? idHolder.getAttribute('data-id') : null);
+            content.after(ui.wrapper);
         });
     }
 
-    function startDownloadTrick(messageContainer, coloredBubble, btnWrapper, btn, isOut) {
-        setBtnState(btn, 'menu', isOut);
-        currentSession = { btnWrapper: btnWrapper, btn: btn, isOut: isOut };
+    function createUI(bubble, msgId) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'wa-tr-wrap ' + (isDark(getComputedStyle(bubble).backgroundColor) ? 'wa-tr-dark' : 'wa-tr-light');
+
+        const buttonGroup = document.createElement('div');
+        buttonGroup.className = 'wa-tr-buttons';
+
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'wa-tr-btn wa-tr-copy';
+        copyBtn.textContent = '📋 Copy';
+        copyBtn.hidden = true;
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'wa-tr-btn';
+
+        buttonGroup.append(copyBtn, btn);
+        wrapper.appendChild(buttonGroup);
+
+        const ui = { bubble, wrapper, btn, copyBtn, msgId, text: '' };
+
+        btn.onclick = (e) => {
+            e.stopPropagation();
+            if (btn.dataset.state === 'close' || btn.dataset.state === 'error') {
+                const textDiv = wrapper.querySelector('.wa-tr-text');
+                if (textDiv) textDiv.remove();
+                if (msgId) transcripts.delete(msgId);
+                copyBtn.hidden = true;
+                setBtnState(btn, 'idle');
+            } else if (btn.dataset.state === 'idle') {
+                const currentKey = checkAndGetApiKey();
+                if (currentKey && currentKey.trim() !== '') {
+                    startDownloadTrick(ui);
+                } else {
+                    showError(ui, "Missing API Key");
+                }
+            }
+        };
+
+        copyBtn.onclick = (e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(ui.text).then(() => {
+                copyBtn.textContent = '✅ Copied!';
+                copyBtn.dataset.copied = 'true';
+                setTimeout(() => {
+                    copyBtn.textContent = '📋 Copy';
+                    delete copyBtn.dataset.copied;
+                }, 2000);
+            });
+        };
+
+        if (msgId && transcripts.has(msgId)) {
+            showResult(ui, transcripts.get(msgId));
+        } else {
+            setBtnState(btn, 'idle');
+        }
+        return ui;
+    }
+
+    function startDownloadTrick(ui) {
+        setBtnState(ui.btn, 'menu');
+        currentSession = ui;
         unsafeWindow.__transcriberTrapArmed = true;
 
-        const playBtn = messageContainer.querySelector('button[aria-label="Play voice message"], button[aria-label="Pause voice message"]');
-        const targetElement = playBtn || coloredBubble;
+        // Only accept a "Download" entry that appears after opening the menu, never one already on the page
+        const existingDownloads = new Set(document.querySelectorAll(DOWNLOAD_SELECTOR));
+
+        const playBtn = ui.bubble.querySelector('button[aria-label="Play voice message"], button[aria-label="Pause voice message"]');
+        const targetElement = playBtn || ui.bubble;
         const rect = targetElement.getBoundingClientRect();
 
         const rightClickEvent = new MouseEvent('contextmenu', {
@@ -266,43 +316,42 @@
         let attempts = 0;
         const findMenuInterval = setInterval(() => {
             attempts++;
-            const downloadBtn = document.querySelector('[aria-label="Download"], [aria-label="Herunterladen"]');
+            const downloadBtn = [...document.querySelectorAll(DOWNLOAD_SELECTOR)].find(el => !existingDownloads.has(el));
 
             if (downloadBtn) {
                 clearInterval(findMenuInterval);
-                setBtnState(btn, 'download', isOut);
+                setBtnState(ui.btn, 'download');
                 downloadBtn.click();
             } else if (attempts > 40) {
                 clearInterval(findMenuInterval);
-                showError(btn, btnWrapper, "Menu error", isOut);
-                document.body.click();
                 unsafeWindow.__transcriberTrapArmed = false;
+                currentSession = null;
+                showError(ui, "Menu error");
+                document.body.click();
             }
         }, 50);
 
         setTimeout(() => {
-            if (unsafeWindow.__transcriberTrapArmed === true) {
+            if (unsafeWindow.__transcriberTrapArmed === true && currentSession === ui) {
                 unsafeWindow.__transcriberTrapArmed = false;
-                if (currentSession && currentSession.btn === btn) {
-                    showError(btn, btnWrapper, "Timeout", isOut);
-                    document.body.click();
-                    currentSession = null;
-                }
+                currentSession = null;
+                showError(ui, "Timeout");
+                document.body.click();
             }
         }, 4000);
     }
 
-    function sendToAPI(blob, btnWrapper, btn, isOut) {
-        let textDiv = btnWrapper.querySelector('.wa-transcript-text');
+    // Groq picks the decoder by file extension, forwarded audio files are not always Opus
+    function fileNameFor(blob) {
+        const extensions = { 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/wav': 'wav', 'audio/webm': 'webm', 'audio/flac': 'flac' };
+        return 'voice_message.' + (extensions[blob.type.split(';')[0].trim()] || 'ogg');
+    }
 
-        if (!textDiv) {
-            textDiv = createTextContainer(isOut);
-            updateTextContent(textDiv, "...", false);
-            btnWrapper.insertBefore(textDiv, btnWrapper.firstChild);
-        }
+    function sendToAPI(blob, ui) {
+        updateTextContent(getTextContainer(ui), "...", false);
 
         const formData = new FormData();
-        formData.append('file', blob, 'voice_message.ogg');
+        formData.append('file', blob, fileNameFor(blob));
         formData.append('model', 'whisper-large-v3');
 
         if (targetLanguage && targetLanguage !== '') {
@@ -316,89 +365,88 @@
             data: formData,
             onload: function(res) {
                 if (res.status === 200) {
-                    const resultText = JSON.parse(res.responseText).text;
-                    updateTextContent(textDiv, resultText, false);
-                    setBtnState(btn, 'close', isOut);
-
-                    const copyBtn = btnWrapper.querySelector('.wa-copy-btn');
-                    if (copyBtn) {
-                        copyBtn.style.display = 'block';
-                        copyBtn.onclick = () => {
-                            navigator.clipboard.writeText(resultText).then(() => {
-                                copyBtn.innerHTML = '✅ Copied!';
-                                copyBtn.style.backgroundColor = '#144d37';
-                                setTimeout(() => {
-                                    copyBtn.innerHTML = '📋 Copy';
-                                    copyBtn.style.backgroundColor = '#404a4e';
-                                }, 2000);
-                            });
-                        };
+                    try {
+                        const resultText = JSON.parse(res.responseText).text.trim();
+                        if (ui.msgId) transcripts.set(ui.msgId, resultText);
+                        showResult(ui, resultText);
+                    } catch (err) {
+                        showError(ui, "Invalid API response");
                     }
                 } else {
-                    showError(btn, btnWrapper, `API Error ${res.status}`, isOut);
+                    showError(ui, describeApiError(res));
                 }
             },
             onerror: function() {
-                showError(btn, btnWrapper, "Offline", isOut);
+                showError(ui, "Offline");
             }
         });
     }
 
-    // --- NEW: Helper Function for safe and robust formatting ---
-    function updateTextContent(container, text, isError) {
-        container.innerHTML = ''; // Clear previous content
+    function describeApiError(res) {
+        let detail = '';
+        try {
+            detail = JSON.parse(res.responseText).error.message;
+        } catch (err) { /* no JSON body */ }
+        if (res.status === 401) detail = 'Invalid API key, change it via the Tampermonkey menu';
+        return `API Error ${res.status}` + (detail ? `: ${detail}` : '');
+    }
 
+    function showResult(ui, text) {
+        ui.text = text;
+        updateTextContent(getTextContainer(ui), text, false);
+        setBtnState(ui.btn, 'close');
+        ui.copyBtn.hidden = false;
+    }
+
+    function showError(ui, msg) {
+        setBtnState(ui.btn, 'error');
+        ui.copyBtn.hidden = true;
+        updateTextContent(getTextContainer(ui), msg, true);
+    }
+
+    function getTextContainer(ui) {
+        let textDiv = ui.wrapper.querySelector('.wa-tr-text');
+        if (!textDiv) {
+            textDiv = document.createElement('div');
+            textDiv.className = 'wa-tr-text';
+            ui.wrapper.insertBefore(textDiv, ui.wrapper.firstChild);
+        }
+        return textDiv;
+    }
+
+    function updateTextContent(container, text, isError) {
         const iconSpan = document.createElement('span');
-        iconSpan.innerText = isError ? '🤖 ❌ ' : '🤖 ';
-        iconSpan.style.fontStyle = 'normal'; // Fix for Emoji Rendering!
-        iconSpan.style.marginRight = '4px';
+        iconSpan.className = 'wa-tr-icon';
+        iconSpan.textContent = isError ? '🤖 ❌' : '🤖';
 
         const textSpan = document.createElement('span');
-        textSpan.innerText = text;
-        textSpan.style.fontStyle = 'italic'; // Text remains italic
+        textSpan.className = 'wa-tr-body';
+        textSpan.textContent = text;
 
-        container.appendChild(iconSpan);
-        container.appendChild(textSpan);
+        container.replaceChildren(iconSpan, textSpan);
     }
 
-    function showError(btn, btnWrapper, msg, isOut) {
-        setBtnState(btn, 'error', isOut);
-        let textDiv = btnWrapper.querySelector('.wa-transcript-text');
-        if (textDiv) updateTextContent(textDiv, msg, true);
-    }
-
-    function createTextContainer(isOut) {
-        const div = document.createElement('div');
-        div.className = 'wa-transcript-text';
-
-        const bgColor = isOut ? 'rgba(0, 0, 0, 0.15)' : 'rgba(255, 255, 255, 0.05)';
-
-        Object.assign(div.style, {
-            padding: '8px 12px',
-            marginBottom: '8px',
-            backgroundColor: bgColor,
-            borderRadius: '8px',
-            fontSize: '14px',
-            lineHeight: '1.4',
-            color: 'var(--primary-text)',
-            wordWrap: 'break-word',
-            width: '100%',
-            boxSizing: 'border-box'
-        });
-        // fontStyle: 'italic' was removed here and moved to updateTextContent
-        return div;
-    }
-
+    // Throttled, but mutations arriving during the pause still get one trailing pass
     let isThrottled = false;
-    const observer = new MutationObserver(() => {
-        if (!isThrottled) {
-            isThrottled = true;
-            requestAnimationFrame(() => {
-                findAndInjectButtons();
-                setTimeout(() => { isThrottled = false; }, 100);
-            });
+    let hasPendingMutations = false;
+    function scheduleScan() {
+        if (isThrottled) {
+            hasPendingMutations = true;
+            return;
         }
-    });
+        isThrottled = true;
+        requestAnimationFrame(() => {
+            findAndInjectButtons();
+            setTimeout(() => {
+                isThrottled = false;
+                if (hasPendingMutations) {
+                    hasPendingMutations = false;
+                    scheduleScan();
+                }
+            }, 100);
+        });
+    }
+    const observer = new MutationObserver(scheduleScan);
 
     setTimeout(() => {
         console.log("🚀 Voice Transcriber started.");
