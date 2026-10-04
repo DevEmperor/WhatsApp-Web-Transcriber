@@ -6,10 +6,24 @@
 
 ## 📸 Screenshots
 
-| The Transcribe Button | The Result |
-| :---: | :---: |
-| <img src="img/img_1.png" width="100%"> | <img src="img/img_2.png" width="100%"> |
-| *The custom button integrates seamlessly into the WhatsApp Web UI.* | *Transcriptions appear directly below the voice message, complete with a convenient copy button.* |
+<table>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="img/transcribe.png" width="420" alt="Voice message bubble with the Transcribe button"><br>
+      <em>One click on "Transcribe", right inside the chat bubble.</em>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <img src="img/result.png" width="100%" alt="Transcript below the voice message with Copy, Summary and Close buttons"><br>
+      <em>The transcript appears directly below the audio, ready to copy.</em>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img src="img/summary.png" width="100%" alt="Summary as bullet points above the transcript"><br>
+      <em>Longer messages can be boiled down to a few bullet points.</em>
+    </td>
+  </tr>
+</table>
 
 ## ✨ Features
 
